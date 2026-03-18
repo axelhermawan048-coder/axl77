@@ -21,7 +21,7 @@ ACCOUNTS = [
         "session": os.getenv("SESSION_1"),
         "api_id": int(os.getenv("API_ID1", 0)),
         "api_hash": os.getenv("API_HASH1"),
-        "TARGET_CHAT": 6532182263
+        "target_chat": os.getenv("TARGET_CHAT")
     },
     {
         "name": "Exporter",
@@ -31,7 +31,7 @@ ACCOUNTS = [
     }
 ]
 
-# Validasi
+# Validasi credentials
 for acc in ACCOUNTS:
     if not all([acc.get("session"), acc.get("api_id"), acc.get("api_hash")]):
         raise ValueError(f"Creds akun {acc['name']} tidak lengkap!")
@@ -39,7 +39,7 @@ for acc in ACCOUNTS:
 # ==========================
 # GOOGLE DRIVE SETUP
 # ==========================
-SERVICE_ACCOUNT_FILE = "service_account.json"
+SERVICE_ACCOUNT_FILE = "service_account.json"  # letakkan file ini di folder project
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 credentials = service_account.Credentials.from_service_account_file(
@@ -54,7 +54,7 @@ queue = asyncio.Queue()  # Forwarder → Exporter
 MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB maksimal batch
 
 # ==========================
-# HELPER GOOGLE DRIVE
+# HELPERS GOOGLE DRIVE
 # ==========================
 async def create_daily_folder():
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -92,15 +92,20 @@ async def upload_to_drive(file_path, folder_id, retries=3):
 # FORWARDER CLIENT
 # ==========================
 async def forwarder_task(account):
-    app = Client(account["session"], api_id=account["api_id"], api_hash=account["api_hash"])
+    app = Client(
+        "forwarder_session",                 # nama session file aman
+        api_id=account["api_id"],
+        api_hash=account["api_hash"],
+        session_string=account["session"],
+        in_memory=True                        # headless, tidak buat file fisik
+    )
     await app.start()
     print(f"{account['name']} Forwarder siap")
 
     @app.on_message(filters.private)
     async def forward_message(client, message):
-        forwarded_msg = await message.forward(account["TARGET_CHAT"])
+        forwarded_msg = await message.forward(account["target_chat"])
         print(f"➡️ Forwarded message {forwarded_msg.message_id}")
-        # Masukkan semua pesan ke queue
         await queue.put(message)
 
     await app.idle()
@@ -109,7 +114,13 @@ async def forwarder_task(account):
 # EXPORTER CLIENT
 # ==========================
 async def exporter_task(account):
-    app = Client(account["session"], api_id=account["api_id"], api_hash=account["api_hash"])
+    app = Client(
+        "exporter_session",                 # nama session file berbeda
+        api_id=account["api_id"],
+        api_hash=account["api_hash"],
+        session_string=account["session"],
+        in_memory=True
+    )
     await app.start()
     print(f"{account['name']} Exporter siap")
 
@@ -120,7 +131,6 @@ async def exporter_task(account):
 
             while not queue.empty() and batch_size < MAX_BATCH_SIZE:
                 msg = await queue.get()
-                # Download semua tipe media / dokumen / teks / sticker
                 file_path = await msg.download() if msg.media else f"{datetime.now().strftime('%H%M%S')}_text.txt"
                 if not msg.media:
                     with open(file_path, "w", encoding="utf-8") as f:
@@ -148,5 +158,5 @@ async def main():
     )
 
 if __name__ == "__main__":
-    print("Menjalankan Forwarder + Exporter (semua jenis file) + upload ke Google Drive setiap 30 menit / batch maksimal")
+    print("Menjalankan Forwarder + Exporter + upload ke Google Drive setiap 30 menit / batch maksimal 500 MB")
     asyncio.run(main())
