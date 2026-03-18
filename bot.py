@@ -21,7 +21,7 @@ ACCOUNTS = [
         "session": os.getenv("SESSION_1"),
         "api_id": int(os.getenv("API_ID1", 0)),
         "api_hash": os.getenv("API_HASH1"),
-        "target_chat": 6532182263
+        "TARGET_CHAT": 6532182263
     },
     {
         "name": "Exporter",
@@ -98,7 +98,7 @@ async def forwarder_task(account):
 
     @app.on_message(filters.private)
     async def forward_message(client, message):
-        forwarded_msg = await message.forward(account["target_chat"])
+        forwarded_msg = await message.forward(account["TARGET_CHAT"])
         print(f"➡️ Forwarded message {forwarded_msg.message_id}")
         # Masukkan semua pesan ke queue
         await queue.put(message)
