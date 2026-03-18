@@ -11,7 +11,7 @@ if not API_ID or not API_HASH or not SESSION:
 
 app = Client("userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION)
 
-TARGET_CHAT = 7312531596  # ganti id pribadi
+TARGET_CHAT = 6532182263  # ganti id pribadi
 FORWARD_ENABLED = True
 FORWARD_DELAY = 5  # jeda forwarding dalam detik
 
@@ -23,7 +23,6 @@ async def forward_private(client, message):
         return
     await asyncio.sleep(FORWARD_DELAY)  # delay sebelum forward
     await message.forward(TARGET_CHAT)   # forward ke grup
-    await message.delete()               # hapus pesan asli di akun pribadi
 
 # Command /pause dan /resume dari Saved Messages
 @app.on_message(filters.chat("me") & filters.text)
