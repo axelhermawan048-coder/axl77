@@ -2,13 +2,16 @@ import os
 from pyrogram import Client, filters
 
 API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+API_HASH = os.getenv("API_HASH"))
 SESSION = os.getenv("SESSION_STRING")
 
-if not API_ID or not API_HASH or not SESSION:
-    raise ValueError("API_ID, API_HASH, atau SESSION_STRING belum diisi!")
-
-app = Client(SESSION, api_id=API_ID, api_hash=API_HASH)
+# Pakai nama file session pendek, misal "userbot"
+app = Client(
+    "userbot77",           # <--- ini nama file .session, pendek saja
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION  # <--- tetap session string panjang
+)
 
 @app.on_message(filters.private & filters.text)
 async def echo(client, message):
