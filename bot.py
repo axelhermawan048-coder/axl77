@@ -11,7 +11,7 @@ if not API_ID or not API_HASH or not SESSION:
 
 app = Client("userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION)
 
-TARGET_CHAT = -1003597078535  # ganti sesuai grup / channel
+TARGET_CHAT = 7312531596  # ganti id pribadi
 FORWARD_ENABLED = True
 FORWARD_DELAY = 5  # jeda forwarding dalam detik
 
