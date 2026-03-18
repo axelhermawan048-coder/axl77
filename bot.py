@@ -108,8 +108,6 @@ async def forwarder_task(account):
         print(f"➡️ Forwarded message {forwarded_msg.message_id}")
         await queue.put(message)
 
-    await app.idle()
-
 # ==========================
 # EXPORTER CLIENT
 # ==========================
