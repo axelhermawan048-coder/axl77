@@ -2,7 +2,7 @@ import os
 from pyrogram import Client, filters
 
 API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH"))
+API_HASH = os.getenv("API_HASH")
 SESSION = os.getenv("SESSION_STRING")
 
 # Pakai nama file session pendek, misal "userbot"
