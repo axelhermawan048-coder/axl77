@@ -1,16 +1,19 @@
-from pyrogram import Client, filters
 import os
+from pyrogram import Client, filters
 
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+SESSION = os.getenv("SESSION_STRING")
 
-app = Client("my_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+if not API_ID or not API_HASH or not SESSION:
+    raise ValueError("API_ID, API_HASH, atau SESSION_STRING belum diisi!")
 
-@app.on_message(filters.text)
+app = Client(SESSION, api_id=API_ID, api_hash=API_HASH)
+
+@app.on_message(filters.private & filters.text)
 async def echo(client, message):
     await message.reply_text(f"Kamu bilang: {message.text}")
 
-print("Bot jalan...")
+print("Userbot Pyrogram jalan...")
 
 app.run()
