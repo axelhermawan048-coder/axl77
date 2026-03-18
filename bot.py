@@ -3,7 +3,7 @@ import os
 import asyncio
 
 API_ID = int(os.getenv("API_ID"))
-API_HASH = os.getenv("API_HASH")
+API_HASH = os.getenv("API_HASH") 
 SESSION = os.getenv("SESSION_STRING")
 
 if not API_ID or not API_HASH or not SESSION:
