@@ -130,7 +130,7 @@ async def exporter_task(account):
             batch = []
             batch_size = 0
 
-            while not queue.empty() and batch_size < MAX_BATCH_SIZE:
+            while batch_size < MAX_BATCH_SIZE:
                 msg = await queue.get()
                 file_path = await msg.download() if msg.media else f"{datetime.now().strftime('%H%M%S')}_text.txt"
                 if not msg.media:
