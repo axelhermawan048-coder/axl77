@@ -105,7 +105,7 @@ async def forwarder_task(account):
     @app.on_message(filters.private)
     async def forward_message(client, message):
         forwarded_msg = await message.forward(account["target_chat"])
-        print(f"➡️ Forwarded message {forwarded_msg.message_id}")
+        print(f"Forwarded message {forwarded_msg.id}")
         await queue.put(message)
 
 # ==========================
