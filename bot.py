@@ -125,29 +125,39 @@ async def exporter_task(account):
     await app.start()
     print(f"{account['name']} Exporter siap")
 
-    async def process_queue():
-        while True:
-            batch = []
-            batch_size = 0
+async def process_queue():
+    while True:
+        batch = []
+        batch_size = 0
 
-            while batch_size < MAX_BATCH_SIZE:
-                msg = await queue.get()
-                file_path = await msg.download() if msg.media else f"{datetime.now().strftime('%H%M%S')}_text.txt"
-                if not msg.media:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(msg.text or "")
-                size = os.path.getsize(file_path)
-                batch_size += size
-                batch.append(file_path)
+        # Ambil pesan sampai batch penuh atau queue kosong
+        while batch_size < MAX_BATCH_SIZE:
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=10)
+            except asyncio.TimeoutError:
+                # Queue kosong, keluar dari loop batch
+                break
 
-            if batch:
-                folder_id = await create_daily_folder()
-                for file_path in batch:
-                    await upload_to_drive(file_path, folder_id)
+            # Download media atau simpan text
+            if msg.media:
+                file_path = await msg.download()
+            else:
+                file_path = f"{datetime.now().strftime('%H%M%S_%f')}_text.txt"  # nama unik
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(msg.text or "")
 
-            await asyncio.sleep(1800)  # 30 menit interval
+            size = os.path.getsize(file_path)
+            batch_size += size
+            batch.append(file_path)
 
-    await process_queue()
+        # Upload batch setelah selesai kumpulkan
+        if batch:
+            folder_id = await create_daily_folder()
+            for file_path in batch:
+                await upload_to_drive(file_path, folder_id)
+
+        # Tunggu 30 menit sebelum batch berikutnya
+        await asyncio.sleep(1800)
 
 # ==========================
 # MAIN
