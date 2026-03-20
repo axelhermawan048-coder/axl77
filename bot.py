@@ -1,33 +1,29 @@
 import os
 import asyncio
+import json
 from datetime import datetime
 from pyrogram import Client, filters
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from dotenv import load_dotenv
-
-# ==========================
-# Load env variables
-# ==========================
-load_dotenv()
 
 # ==========================
 # CONFIG AKUN TELEGRAM
 # ==========================
+# Semua credential diambil dari Environment Variables Railway
 ACCOUNTS = [
     {
         "name": "Forwarder",
-        "session": os.getenv("SESSION_1"),
-        "api_id": int(os.getenv("API_ID1", 0)),
-        "api_hash": os.getenv("API_HASH1"),
-        "target_chat": os.getenv("TARGET_CHAT")
+        "session": os.environ.get("SESSION_1"),
+        "api_id": int(os.environ.get("API_ID1", 0)),
+        "api_hash": os.environ.get("API_HASH1"),
+        "target_chat": os.environ.get("TARGET_CHAT")
     },
     {
         "name": "Exporter",
-        "session": os.getenv("SESSION_2"),
-        "api_id": int(os.getenv("API_ID2", 0)),
-        "api_hash": os.getenv("API_HASH2")
+        "session": os.environ.get("SESSION_2"),
+        "api_id": int(os.environ.get("API_ID2", 0)),
+        "api_hash": os.environ.get("API_HASH2")
     }
 ]
 
@@ -39,12 +35,14 @@ for acc in ACCOUNTS:
 # ==========================
 # GOOGLE DRIVE SETUP
 # ==========================
-SERVICE_ACCOUNT_FILE = "service_account.json"
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-credentials = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES
+# Ambil service account dari env variable
+service_account_info = json.loads(os.environ["GCP_SERVICE_ACCOUNT"])
+credentials = service_account.Credentials.from_service_account_info(
+    service_account_info, scopes=SCOPES
 )
+
 drive_service = build('drive', 'v3', credentials=credentials)
 
 # ==========================
@@ -100,11 +98,8 @@ async def forwarder_task(account):
         in_memory=True
     )
     await app.start()
-
-    # Tambahkan log akun yang digunakan
     me = await app.get_me()
     print(f"Forwarder pakai akun: {me.id} | {me.first_name}")
-
     print(f"{account['name']} Forwarder siap")
 
     @app.on_message(filters.private)
@@ -130,11 +125,8 @@ async def exporter_task(account):
         in_memory=True
     )
     await app.start()
-
-    # Tambahkan log akun yang digunakan
     me = await app.get_me()
     print(f"Exporter pakai akun: {me.id} | {me.first_name}")
-
     print(f"{account['name']} Exporter siap")
 
     async def process_queue():
