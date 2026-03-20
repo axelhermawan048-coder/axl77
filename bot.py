@@ -93,13 +93,18 @@ async def upload_to_drive(file_path, folder_id, retries=3):
 # ==========================
 async def forwarder_task(account):
     app = Client(
-        f"{account['name']}_session",  # unik per akun
+        f"{account['name']}_session",
         api_id=account["api_id"],
         api_hash=account["api_hash"],
         session_string=account["session"],
         in_memory=True
     )
     await app.start()
+
+    # Tambahkan log akun yang digunakan
+    me = await app.get_me()
+    print(f"Forwarder pakai akun: {me.id} | {me.first_name}")
+
     print(f"{account['name']} Forwarder siap")
 
     @app.on_message(filters.private)
@@ -125,6 +130,11 @@ async def exporter_task(account):
         in_memory=True
     )
     await app.start()
+
+    # Tambahkan log akun yang digunakan
+    me = await app.get_me()
+    print(f"Exporter pakai akun: {me.id} | {me.first_name}")
+
     print(f"{account['name']} Exporter siap")
 
     async def process_queue():
