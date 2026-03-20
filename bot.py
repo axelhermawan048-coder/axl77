@@ -39,7 +39,7 @@ for acc in ACCOUNTS:
 # ==========================
 # GOOGLE DRIVE SETUP
 # ==========================
-SERVICE_ACCOUNT_FILE = "service_account.json"  # letakkan file ini di folder project
+SERVICE_ACCOUNT_FILE = "service_account.json"
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 credentials = service_account.Credentials.from_service_account_file(
@@ -51,7 +51,7 @@ drive_service = build('drive', 'v3', credentials=credentials)
 # QUEUE GLOBAL
 # ==========================
 queue = asyncio.Queue()  # Forwarder → Exporter
-MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB maksimal batch
+MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB
 
 # ==========================
 # HELPERS GOOGLE DRIVE
@@ -93,30 +93,32 @@ async def upload_to_drive(file_path, folder_id, retries=3):
 # ==========================
 async def forwarder_task(account):
     app = Client(
-        "forwarder_session",
+        f"{account['name']}_session",  # unik per akun
         api_id=account["api_id"],
         api_hash=account["api_hash"],
         session_string=account["session"],
         in_memory=True
     )
-
     await app.start()
     print(f"{account['name']} Forwarder siap")
 
     @app.on_message(filters.private)
     async def forward_message(client, message):
-        forwarded_msg = await message.forward(account["target_chat"])
-        print(f"Forwarded message {forwarded_msg.id}")
-        await queue.put(forwarded_msg)
+        try:
+            forwarded_msg = await message.forward(account["target_chat"])
+            print(f"Forwarded message {forwarded_msg.id}")
+            await queue.put(forwarded_msg)
+        except Exception as e:
+            print(f"❌ Gagal forward: {e}")
 
-    # ⬇️ WAJIB di dalam function
-    await asyncio.Event().wait()
+    await asyncio.Event().wait()  # supaya forwarder tetap hidup
+
 # ==========================
 # EXPORTER CLIENT
 # ==========================
 async def exporter_task(account):
     app = Client(
-        "exporter_session",                 # nama session file berbeda
+        f"{account['name']}_session",
         api_id=account["api_id"],
         api_hash=account["api_hash"],
         session_string=account["session"],
@@ -125,39 +127,40 @@ async def exporter_task(account):
     await app.start()
     print(f"{account['name']} Exporter siap")
 
-async def process_queue():
-    while True:
-        batch = []
-        batch_size = 0
+    async def process_queue():
+        while True:
+            batch = []
+            batch_size = 0
 
-        # Ambil pesan sampai batch penuh atau queue kosong
-        while batch_size < MAX_BATCH_SIZE:
-            try:
-                msg = await asyncio.wait_for(queue.get(), timeout=10)
-            except asyncio.TimeoutError:
-                # Queue kosong, keluar dari loop batch
-                break
+            while batch_size < MAX_BATCH_SIZE:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=10)
+                except asyncio.TimeoutError:
+                    break
 
-            # Download media atau simpan text
-            if msg.media:
-                file_path = await msg.download()
-            else:
-                file_path = f"{datetime.now().strftime('%H%M%S_%f')}_text.txt"  # nama unik
-                with open(file_path, "w", encoding="utf-8") as f:
-                    f.write(msg.text or "")
+                try:
+                    if msg.media:
+                        file_path = await msg.download()
+                    else:
+                        file_path = f"{datetime.now().strftime('%H%M%S_%f')}_text.txt"
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            f.write(msg.text or "")
+                except Exception as e:
+                    print(f"⚠️ Gagal download pesan: {e}")
+                    continue
 
-            size = os.path.getsize(file_path)
-            batch_size += size
-            batch.append(file_path)
+                size = os.path.getsize(file_path)
+                batch_size += size
+                batch.append(file_path)
 
-        # Upload batch setelah selesai kumpulkan
-        if batch:
-            folder_id = await create_daily_folder()
-            for file_path in batch:
-                await upload_to_drive(file_path, folder_id)
+            if batch:
+                folder_id = await create_daily_folder()
+                for file_path in batch:
+                    await upload_to_drive(file_path, folder_id)
 
-        # Tunggu 30 menit sebelum batch berikutnya
-        await asyncio.sleep(1800)
+            await asyncio.sleep(1800)  # 30 menit
+
+    await process_queue()
 
 # ==========================
 # MAIN
