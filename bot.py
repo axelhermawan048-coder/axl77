@@ -93,12 +93,13 @@ async def upload_to_drive(file_path, folder_id, retries=3):
 # ==========================
 async def forwarder_task(account):
     app = Client(
-        "forwarder_session",                 # nama session file aman
+        "forwarder_session",
         api_id=account["api_id"],
         api_hash=account["api_hash"],
         session_string=account["session"],
-        in_memory=True                        # headless, tidak buat file fisik
+        in_memory=True
     )
+
     await app.start()
     print(f"{account['name']} Forwarder siap")
 
@@ -106,8 +107,10 @@ async def forwarder_task(account):
     async def forward_message(client, message):
         forwarded_msg = await message.forward(account["target_chat"])
         print(f"Forwarded message {forwarded_msg.id}")
-        await queue.put(message)
+        await queue.put(forwarded_msg)
 
+    # ⬇️ WAJIB di dalam function
+    await asyncio.Event().wait()
 # ==========================
 # EXPORTER CLIENT
 # ==========================
