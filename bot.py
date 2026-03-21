@@ -1,14 +1,24 @@
 import os
 import asyncio
 import json
+import uuid
+import logging
 from datetime import datetime
+
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
 # ==========================
-# CONFIG AKUN TELEGRAM
+# LOGGING
+# ==========================
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# ==========================
+# CONFIG TELEGRAM
 # ==========================
 ACCOUNTS = [
     {
@@ -26,159 +36,199 @@ ACCOUNTS = [
     }
 ]
 
-# Validasi credentials
 for acc in ACCOUNTS:
     if not all([acc.get("session"), acc.get("api_id"), acc.get("api_hash")]):
         raise ValueError(f"Creds akun {acc['name']} tidak lengkap!")
 
 # ==========================
-# GOOGLE DRIVE SETUP
+# GOOGLE DRIVE
 # ==========================
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 service_account_info = json.loads(os.environ["GCP_SERVICE_ACCOUNT"])
+
 credentials = service_account.Credentials.from_service_account_info(
     service_account_info, scopes=SCOPES
 )
+
 drive_service = build('drive', 'v3', credentials=credentials)
 
 # ==========================
-# QUEUE GLOBAL
+# GLOBAL QUEUE
 # ==========================
-queue = asyncio.Queue()
-MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB
+queue = asyncio.Queue(maxsize=1000)
+
+MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500MB
 UPLOAD_RETRIES = 5
-FORWARD_RETRIES = 5
 
 # ==========================
-# HELPERS GOOGLE DRIVE
+# GOOGLE DRIVE HELPERS
 # ==========================
 async def create_daily_folder():
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    try:
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    loop = asyncio.get_event_loop()
+
+    def _create():
         results = drive_service.files().list(
-            q=f"name='{today_str}' and mimeType='application/vnd.google-apps.folder'",
-            spaces='drive',
-            fields='files(id, name)'
+            q=f"name='{today}' and mimeType='application/vnd.google-apps.folder' and 'root' in parents",
+            fields='files(id)'
         ).execute()
+
         files = results.get('files', [])
         if files:
             return files[0]['id']
+
         folder = drive_service.files().create(
-            body={'name': today_str, 'mimeType': 'application/vnd.google-apps.folder'},
+            body={
+                'name': today,
+                'mimeType': 'application/vnd.google-apps.folder'
+            },
             fields='id'
         ).execute()
+
         return folder['id']
+
+    try:
+        return await loop.run_in_executor(None, _create)
     except Exception as e:
-        print(f"❌ Gagal buat/cek folder harian: {e}")
+        logging.error(f"Gagal create folder: {e}")
         return None
 
+
 async def upload_to_drive(file_path, folder_id):
+    loop = asyncio.get_event_loop()
+
     for attempt in range(UPLOAD_RETRIES):
         try:
-            media = MediaFileUpload(file_path, resumable=True)
-            file = drive_service.files().create(
-                body={'name': os.path.basename(file_path), 'parents': [folder_id]},
-                media_body=media, fields='id'
-            ).execute()
-            print(f"✅ {file_path} uploaded, ID: {file['id']}")
+            def _upload():
+                media = MediaFileUpload(file_path, resumable=True)
+                file = drive_service.files().create(
+                    body={
+                        'name': os.path.basename(file_path),
+                        'parents': [folder_id]
+                    },
+                    media_body=media,
+                    fields='id'
+                ).execute()
+                return file['id']
+
+            file_id = await loop.run_in_executor(None, _upload)
+
+            logging.info(f"Uploaded: {file_path} | ID: {file_id}")
             os.remove(file_path)
-            return file['id']
+            return
+
         except Exception as e:
-            print(f"⚠️ Upload gagal (attempt {attempt+1}/{UPLOAD_RETRIES}): {e}")
+            logging.warning(f"Upload gagal ({attempt+1}): {e}")
             await asyncio.sleep(5)
-    print(f"❌ Upload gagal permanen: {file_path}")
+
+    logging.error(f"Upload gagal permanen: {file_path}")
 
 # ==========================
-# FORWARDER CLIENT
+# FORWARDER
 # ==========================
 async def forwarder_task(account):
-    try:
-        app = Client(
-            f"{account['name']}_session",
-            api_id=account["api_id"],
-            api_hash=account["api_hash"],
-            session_string=account["session"],
-            in_memory=True
-        )
-        await app.start()
-        me = await app.get_me()
-        print(f"Forwarder pakai akun: {me.id} | {me.first_name}")
-        print(f"{account['name']} Forwarder siap")
+    while True:
+        try:
+            app = Client(
+                f"{account['name']}",
+                api_id=account["api_id"],
+                api_hash=account["api_hash"],
+                session_string=account["session"],
+                in_memory=True
+            )
 
-        @app.on_message(filters.private)
-        async def forward_message(client, message):
-            for attempt in range(FORWARD_RETRIES):
-                try:
-                    forwarded_msg = await message.forward(account["target_chat"])
-                    print(f"Forwarded message {forwarded_msg.id}")
-                    await queue.put(forwarded_msg)
-                    break
-                except Exception as e:
-                    print(f"⚠️ Gagal forward (attempt {attempt+1}/{FORWARD_RETRIES}): {e}")
-                    await asyncio.sleep(5)
+            await app.start()
+            logging.info("Forwarder started")
 
-        await asyncio.Event().wait()
-    except Exception as e:
-        print(f"❌ Forwarder crash: {e}")
-        await asyncio.sleep(10)
-        await forwarder_task(account)  # restart jika crash
+            @app.on_message(filters.private)
+            async def handler(client, message):
+                for attempt in range(5):
+                    try:
+                        forwarded = await message.forward(account["target_chat"])
+
+                        await queue.put({
+                            "chat_id": forwarded.chat.id,
+                            "message_id": forwarded.id
+                        })
+
+                        logging.info(f"Forwarded: {forwarded.id}")
+                        break
+
+                    except FloodWait as e:
+                        logging.warning(f"FloodWait {e.value}s")
+                        await asyncio.sleep(e.value)
+
+                    except Exception as e:
+                        logging.warning(f"Forward gagal: {e}")
+                        await asyncio.sleep(3)
+
+            await asyncio.Event().wait()
+
+        except Exception as e:
+            logging.error(f"Forwarder crash: {e}")
+            await asyncio.sleep(5)
 
 # ==========================
-# EXPORTER CLIENT
+# EXPORTER
 # ==========================
 async def exporter_task(account):
-    try:
-        app = Client(
-            f"{account['name']}_session",
-            api_id=account["api_id"],
-            api_hash=account["api_hash"],
-            session_string=account["session"],
-            in_memory=True
-        )
-        await app.start()
-        me = await app.get_me()
-        print(f"Exporter pakai akun: {me.id} | {me.first_name}")
-        print(f"{account['name']} Exporter siap")
+    while True:
+        try:
+            app = Client(
+                f"{account['name']}",
+                api_id=account["api_id"],
+                api_hash=account["api_hash"],
+                session_string=account["session"],
+                in_memory=True
+            )
 
-        async def process_queue():
+            await app.start()
+            logging.info("Exporter started")
+
             while True:
                 batch = []
                 batch_size = 0
 
                 while batch_size < MAX_BATCH_SIZE:
                     try:
-                        msg = await asyncio.wait_for(queue.get(), timeout=10)
+                        item = await asyncio.wait_for(queue.get(), timeout=10)
                     except asyncio.TimeoutError:
                         break
 
                     try:
+                        msg = await app.get_messages(item["chat_id"], item["message_id"])
+
                         if msg.media:
                             file_path = await msg.download()
                         else:
-                            file_path = f"{datetime.now().strftime('%H%M%S_%f')}_text.txt"
+                            file_path = f"{uuid.uuid4()}.txt"
                             with open(file_path, "w", encoding="utf-8") as f:
                                 f.write(msg.text or "")
-                    except Exception as e:
-                        print(f"⚠️ Gagal download pesan: {e}")
-                        continue
 
-                    size = os.path.getsize(file_path)
-                    batch_size += size
-                    batch.append(file_path)
+                        size = os.path.getsize(file_path)
+                        batch.append(file_path)
+                        batch_size += size
+
+                        logging.info(f"Added to batch: {file_path}")
+
+                    except Exception as e:
+                        logging.warning(f"Download gagal: {e}")
 
                 if batch:
+                    logging.info(f"Upload batch: {len(batch)} file")
+
                     folder_id = await create_daily_folder()
+
                     if folder_id:
-                        for file_path in batch:
-                            await upload_to_drive(file_path, folder_id)
+                        tasks = [upload_to_drive(f, folder_id) for f in batch]
+                        await asyncio.gather(*tasks)
 
-                await asyncio.sleep(1800)  # 30 menit
+                await asyncio.sleep(5)
 
-        await process_queue()
-    except Exception as e:
-        print(f"❌ Exporter crash: {e}")
-        await asyncio.sleep(10)
-        await exporter_task(account)  # restart jika crash
+        except Exception as e:
+            logging.error(f"Exporter crash: {e}")
+            await asyncio.sleep(5)
 
 # ==========================
 # MAIN
@@ -186,10 +236,9 @@ async def exporter_task(account):
 async def main():
     await asyncio.gather(
         forwarder_task(ACCOUNTS[0]),
-        exporter_task(ACCOUNTS[1]),
-        return_exceptions=True
+        exporter_task(ACCOUNTS[1])
     )
 
 if __name__ == "__main__":
-    print("Menjalankan Forwarder + Exporter + upload ke Google Drive setiap 30 menit / batch maksimal 500 MB")
+    logging.info("START BOT")
     asyncio.run(main())
