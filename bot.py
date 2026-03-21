@@ -128,7 +128,7 @@ async def exporter_task(account):
                             print(f"⚠️ Gagal kirim ZIP (attempt {attempt+1}/{FORWARD_RETRIES}): {e}")
                             await asyncio.sleep(5)
 
-                await asyncio.sleep(1800)  # jeda 30 menit per batch
+                await asyncio.sleep(21600)  # jeda 30 menit per batch
 
         await process_queue()
     except Exception as e:
