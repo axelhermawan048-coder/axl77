@@ -4,11 +4,14 @@ from datetime import datetime
 from pyrogram import Client, filters
 import zipfile
 
-queue = asyncio.Queue()
-MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB
-FORWARD_RETRIES = 5
-
 ACCOUNTS = [
+    {
+        "name": "Forwarder",
+        "session": os.environ.get("SESSION_1"),
+        "api_id": int(os.environ.get("API_ID1", 0)),
+        "api_hash": os.environ.get("API_HASH1"),
+        "target_chat": os.environ.get("TARGET_CHAT")
+    },
     {
         "name": "Exporter",
         "session": os.environ.get("SESSION_2"),
@@ -16,6 +19,57 @@ ACCOUNTS = [
         "api_hash": os.environ.get("API_HASH2")
     }
 ]
+
+# Validasi credentials
+for acc in ACCOUNTS:
+    if not all([acc.get("session"), acc.get("api_id"), acc.get("api_hash")]):
+        raise ValueError(f"Creds akun {acc['name']} tidak lengkap!")
+
+# ==========================
+# QUEUE GLOBAL
+# ==========================
+queue = asyncio.Queue()
+MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB
+FORWARD_RETRIES = 5
+
+# ==========================
+# FORWARDER CLIENT
+# ==========================
+async def forwarder_task(account):
+    try:
+        app = Client(
+            f"{account['name']}_session",
+            api_id=account["api_id"],
+            api_hash=account["api_hash"],
+            session_string=account["session"],
+            in_memory=True
+        )
+        await app.start()
+        me = await app.get_me()
+        print(f"Forwarder pakai akun: {me.id} | {me.first_name}")
+        print(f"{account['name']} Forwarder siap")
+
+        @app.on_message(filters.private)
+        async def forward_message(client, message):
+            for attempt in range(FORWARD_RETRIES):
+                try:
+                    forwarded_msg = await message.forward(account["target_chat"])
+                    print(f"Forwarded message {forwarded_msg.id}")
+                    await queue.put(forwarded_msg)
+                    break
+                except Exception as e:
+                    print(f"⚠️ Forward gagal (attempt {attempt+1}/{FORWARD_RETRIES}): {e}")
+                    await asyncio.sleep(5)
+
+        await asyncio.Event().wait()
+    except Exception as e:
+        print(f"❌ Forwarder crash: {e}")
+        await asyncio.sleep(10)
+        await forwarder_task(account)
+
+# ==========================
+# EXPORTER CLIENT
+# ==========================
 
 async def exporter_task(account):
     try:
@@ -81,10 +135,13 @@ async def exporter_task(account):
         print(f"❌ Exporter crash: {e}")
         await asyncio.sleep(10)
         await exporter_task(account)
-
+# ==========================
+# MAIN
+# ==========================
 async def main():
     await asyncio.gather(
-        exporter_task(ACCOUNTS[0]),
+        forwarder_task(ACCOUNTS[0]),
+        exporter_task(ACCOUNTS[1]),
         return_exceptions=True
     )
 
