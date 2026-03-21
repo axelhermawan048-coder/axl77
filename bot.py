@@ -1,9 +1,9 @@
 import os
 import asyncio
-import json
 from datetime import datetime
 from pyrogram import Client, filters
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
@@ -32,17 +32,24 @@ for acc in ACCOUNTS:
         raise ValueError(f"Creds akun {acc['name']} tidak lengkap!")
 
 # ==========================
-# GOOGLE DRIVE SETUP
+# GOOGLE DRIVE OAUTH SETUP
 # ==========================
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
-service_account_info = json.loads(os.environ["GCP_SERVICE_ACCOUNT"])
-credentials = service_account.Credentials.from_service_account_info(
-    service_account_info, scopes=SCOPES
-)
-drive_service = build('drive', 'v3', credentials=credentials)
+OAUTH_JSON = 'oauth_credentials.json'  # file JSON OAuth
+TOKEN_JSON = 'token.json'             # token setelah login
 
-# ID folder utama di akun Gmail kamu (buat dan share ke service account)
-PARENT_FOLDER_ID = os.environ.get("DRIVE_PARENT_FOLDER_ID")  # misal: "1AbCDeFGhIJKL12345"
+if os.path.exists(TOKEN_JSON):
+    creds = Credentials.from_authorized_user_file(TOKEN_JSON, SCOPES)
+else:
+    flow = InstalledAppFlow.from_client_secrets_file(OAUTH_JSON, SCOPES)
+    creds = flow.run_local_server(port=0)
+    with open(TOKEN_JSON, 'w') as f:
+        f.write(creds.to_json())
+
+drive_service = build('drive', 'v3', credentials=creds)
+
+# Folder utama untuk upload
+PARENT_FOLDER_ID = os.environ.get("DRIVE_PARENT_FOLDER_ID")  # folder "Telegram Uploads"
 
 # ==========================
 # QUEUE GLOBAL
@@ -66,6 +73,7 @@ async def create_daily_folder():
         files = results.get('files', [])
         if files:
             return files[0]['id']
+
         folder = drive_service.files().create(
             body={'name': today_str, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [PARENT_FOLDER_ID]},
             fields='id'
@@ -106,7 +114,6 @@ async def forwarder_task(account):
         await app.start()
         me = await app.get_me()
         print(f"Forwarder pakai akun: {me.id} | {me.first_name}")
-        print(f"{account['name']} Forwarder siap")
 
         @app.on_message(filters.private)
         async def forward_message(client, message):
@@ -141,7 +148,6 @@ async def exporter_task(account):
         await app.start()
         me = await app.get_me()
         print(f"Exporter pakai akun: {me.id} | {me.first_name}")
-        print(f"{account['name']} Exporter siap")
 
         async def process_queue():
             while True:
