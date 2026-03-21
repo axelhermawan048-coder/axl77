@@ -2,22 +2,13 @@ import os
 import asyncio
 from datetime import datetime
 from pyrogram import Client, filters
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+import zipfile
 
-# ==========================
-# CONFIG AKUN TELEGRAM
-# ==========================
+queue = asyncio.Queue()
+MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB
+FORWARD_RETRIES = 5
+
 ACCOUNTS = [
-    {
-        "name": "Forwarder",
-        "session": os.environ.get("SESSION_1"),
-        "api_id": int(os.environ.get("API_ID1", 0)),
-        "api_hash": os.environ.get("API_HASH1"),
-        "target_chat": os.environ.get("TARGET_CHAT")
-    },
     {
         "name": "Exporter",
         "session": os.environ.get("SESSION_2"),
@@ -26,116 +17,6 @@ ACCOUNTS = [
     }
 ]
 
-# Validasi credentials
-for acc in ACCOUNTS:
-    if not all([acc.get("session"), acc.get("api_id"), acc.get("api_hash")]):
-        raise ValueError(f"Creds akun {acc['name']} tidak lengkap!")
-
-# ==========================
-# GOOGLE DRIVE OAUTH SETUP
-# ==========================
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-OAUTH_JSON = 'oauth_credentials.json'  # file JSON OAuth
-TOKEN_JSON = 'token.json'             # token setelah login
-
-if os.path.exists(TOKEN_JSON):
-    creds = Credentials.from_authorized_user_file(TOKEN_JSON, SCOPES)
-else:
-    flow = InstalledAppFlow.from_client_secrets_file(OAUTH_JSON, SCOPES)
-    creds = flow.run_local_server(port=0)
-    with open(TOKEN_JSON, 'w') as f:
-        f.write(creds.to_json())
-
-drive_service = build('drive', 'v3', credentials=creds)
-
-# Folder utama untuk upload
-PARENT_FOLDER_ID = os.environ.get("DRIVE_PARENT_FOLDER_ID")  # folder "Telegram Uploads"
-
-# ==========================
-# QUEUE GLOBAL
-# ==========================
-queue = asyncio.Queue()
-MAX_BATCH_SIZE = 500 * 1024 * 1024  # 500 MB
-UPLOAD_RETRIES = 5
-FORWARD_RETRIES = 5
-
-# ==========================
-# HELPERS GOOGLE DRIVE
-# ==========================
-async def create_daily_folder():
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    try:
-        results = drive_service.files().list(
-            q=f"'{PARENT_FOLDER_ID}' in parents and name='{today_str}' and mimeType='application/vnd.google-apps.folder'",
-            spaces='drive',
-            fields='files(id, name)'
-        ).execute()
-        files = results.get('files', [])
-        if files:
-            return files[0]['id']
-
-        folder = drive_service.files().create(
-            body={'name': today_str, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [PARENT_FOLDER_ID]},
-            fields='id'
-        ).execute()
-        return folder['id']
-    except Exception as e:
-        print(f"❌ Gagal buat/cek folder harian: {e}")
-        return None
-
-async def upload_to_drive(file_path, folder_id):
-    for attempt in range(UPLOAD_RETRIES):
-        try:
-            media = MediaFileUpload(file_path, resumable=True)
-            file = drive_service.files().create(
-                body={'name': os.path.basename(file_path), 'parents': [folder_id]},
-                media_body=media, fields='id'
-            ).execute()
-            print(f"✅ Uploaded: {file_path} | ID: {file['id']}")
-            os.remove(file_path)
-            return file['id']
-        except Exception as e:
-            print(f"⚠️ Upload gagal (attempt {attempt+1}/{UPLOAD_RETRIES}): {e}")
-            await asyncio.sleep(5)
-    print(f"❌ Upload permanen gagal: {file_path}")
-
-# ==========================
-# FORWARDER CLIENT
-# ==========================
-async def forwarder_task(account):
-    try:
-        app = Client(
-            f"{account['name']}_session",
-            api_id=account["api_id"],
-            api_hash=account["api_hash"],
-            session_string=account["session"],
-            in_memory=True
-        )
-        await app.start()
-        me = await app.get_me()
-        print(f"Forwarder pakai akun: {me.id} | {me.first_name}")
-
-        @app.on_message(filters.private)
-        async def forward_message(client, message):
-            for attempt in range(FORWARD_RETRIES):
-                try:
-                    forwarded_msg = await message.forward(account["target_chat"])
-                    print(f"Forwarded message {forwarded_msg.id}")
-                    await queue.put(forwarded_msg)
-                    break
-                except Exception as e:
-                    print(f"⚠️ Forward gagal (attempt {attempt+1}/{FORWARD_RETRIES}): {e}")
-                    await asyncio.sleep(5)
-
-        await asyncio.Event().wait()
-    except Exception as e:
-        print(f"❌ Forwarder crash: {e}")
-        await asyncio.sleep(10)
-        await forwarder_task(account)
-
-# ==========================
-# EXPORTER CLIENT
-# ==========================
 async def exporter_task(account):
     try:
         app = Client(
@@ -151,7 +32,7 @@ async def exporter_task(account):
 
         async def process_queue():
             while True:
-                batch = []
+                batch_files = []
                 batch_size = 0
 
                 while batch_size < MAX_BATCH_SIZE:
@@ -171,17 +52,29 @@ async def exporter_task(account):
                         print(f"⚠️ Gagal download pesan: {e}")
                         continue
 
-                    size = os.path.getsize(file_path)
-                    batch_size += size
-                    batch.append(file_path)
+                    batch_size += os.path.getsize(file_path)
+                    batch_files.append(file_path)
 
-                if batch:
-                    folder_id = await create_daily_folder()
-                    if folder_id:
-                        for file_path in batch:
-                            await upload_to_drive(file_path, folder_id)
+                if batch_files:
+                    # Buat ZIP per batch
+                    zip_name = f"{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.zip"
+                    with zipfile.ZipFile(zip_name, 'w') as zipf:
+                        for f in batch_files:
+                            zipf.write(f, os.path.basename(f))
+                            os.remove(f)
 
-                await asyncio.sleep(1800)  # 30 menit
+                    # Kirim ke Saved Messages
+                    for attempt in range(FORWARD_RETRIES):
+                        try:
+                            await app.send_document("me", zip_name)
+                            print(f"✅ Batch dikirim ke Saved Messages: {zip_name}")
+                            os.remove(zip_name)
+                            break
+                        except Exception as e:
+                            print(f"⚠️ Gagal kirim ZIP (attempt {attempt+1}/{FORWARD_RETRIES}): {e}")
+                            await asyncio.sleep(5)
+
+                await asyncio.sleep(1800)  # jeda 30 menit per batch
 
         await process_queue()
     except Exception as e:
@@ -189,16 +82,12 @@ async def exporter_task(account):
         await asyncio.sleep(10)
         await exporter_task(account)
 
-# ==========================
-# MAIN
-# ==========================
 async def main():
     await asyncio.gather(
-        forwarder_task(ACCOUNTS[0]),
-        exporter_task(ACCOUNTS[1]),
+        exporter_task(ACCOUNTS[0]),
         return_exceptions=True
     )
 
 if __name__ == "__main__":
-    print("Menjalankan Forwarder + Exporter + upload ke Google Drive setiap 30 menit / batch maksimal 500 MB")
+    print("Menjalankan Exporter Telegram → ZIP → Saved Messages setiap batch maksimal 500 MB")
     asyncio.run(main())
